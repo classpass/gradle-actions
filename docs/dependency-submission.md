@@ -15,6 +15,15 @@ for vulnerable dependencies, as well as to populate the
 
 If you're confused by the behaviour you're seeing or have specific questions, please check out [the FAQ](dependency-submission-faq.md) before raising an issue.
 
+> [!NOTE]
+> ### ⚡️ Choice of caching providers in v6
+> To provide the fastest possible build experience this action includes **Enhanced Caching** via `gradle-actions-caching`, an optimized provider powered by proprietary technology. This feature is **free for all public repositories** and is currently available as a **Free Preview** for private repositories. 
+>
+> **Prefer a 100% Open Source (MIT) path?**
+> We also provide a **Basic Caching** provider as a thin wrapper over `actions/cache`. This provider is **free for all repositories** (public and private) and can be enabled at any time by setting `cache-provider: basic`.
+>
+> For a full breakdown of the components, usage tiers, and our **Safe Harbor** data privacy commitment, see our [Distribution & Licensing Guide](../DISTRIBUTION.md).
+
 ## General usage
 
 The following workflow will generate a dependency graph for a Gradle project and submit it immediately to the repository via the
@@ -36,14 +45,14 @@ jobs:
   dependency-submission:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-java@v4
+    - uses: actions/checkout@v6
+    - uses: actions/setup-java@v5
       with:
         distribution: temurin
         java-version: 17
 
     - name: Generate and submit dependency graph
-      uses: gradle/actions/dependency-submission@v4
+      uses: gradle/actions/dependency-submission@v6
 ```
 
 ### Gradle execution
@@ -60,6 +69,17 @@ on the command-line will be used.
 The action provides the ability to override the Gradle version and task to execute, as well as provide 
 additional arguments that will be passed to Gradle on the command-line. See [Configuration Parameters](#configuration-parameters) below.
 
+### Selecting a cache provider
+
+See [Selecting a cache provider](setup-gradle.md#selecting-a-cache-provider) for details on choosing between the `enhanced` (default) and `basic` cache providers via the `cache-provider` input.
+
+### Disabling caching
+
+Caching is enabled by default. You can disable caching for the action as follows:
+```yaml
+cache-disabled: true
+```
+
 ### Publishing a Develocity Build Scan® from your dependency submission workflow
 
 You can automatically publish a free Develocity Build Scan on every run of `gradle/actions/dependency-submission`. 
@@ -68,7 +88,7 @@ Three input parameters are required, one to enable publishing and two more to ac
 
 ```yaml
     - name: Generate and submit dependency graph
-      uses: gradle/actions/dependency-submission@v4
+      uses: gradle/actions/dependency-submission@v6
       with:
         build-scan-publish: true
         build-scan-terms-of-use-url: "https://gradle.com/help/legal-terms-of-use"
@@ -83,10 +103,10 @@ In some cases, the default action configuration will not be sufficient, and addi
 
 ```yaml
     - name: Generate and save dependency graph
-      uses: gradle/actions/dependency-submission@v4
+      uses: gradle/actions/dependency-submission@v6
       with:
         # Use a particular Gradle version instead of the configured wrapper.
-        gradle-version: 8.6
+        gradle-version: '8.6'
 
         # The gradle project is not in the root of the repository.
         build-root-directory: my-gradle-project
@@ -103,6 +123,9 @@ In some cases, the default action configuration will not be sufficient, and addi
         # Do not attempt to submit the dependency-graph. Save it as a workflow artifact.
         dependency-graph: generate-and-upload
 
+        # Change the number of days that workflow artifacts are retained. (Default is 30 days).
+        artifact-retention-days: 5
+
         # Specify the location where dependency graph files will be generated.
         dependency-graph-report-dir: custom-report-dir
 
@@ -117,6 +140,29 @@ The `GitHub Dependency Graph Gradle Plugin` can be further
 [configured via a number of environment variables](https://github.com/gradle/github-dependency-graph-gradle-plugin?#required-environment-variables). 
 These will be automatically set by the `dependency-submission` action, but you may override these values 
 by setting them explicitly in your workflow file.
+
+### Reducing storage costs for saved dependency graph artifacts
+
+By default, the dependency graph that is generated is stored as a workflow artifact.
+To reduce storage costs for these artifacts, you can:
+
+1. Set the `artifact-retention-days`:
+
+```yaml
+    - name: Generate dependency graph but only store workflow artifacts for 1 day
+      uses: gradle/actions/dependency-submission@v6
+      with:
+        artifact-retention-days: 1 # Default is 30 days or as configured for repository
+```
+
+2. Disable storing dependency-graph artifacts using `generate-and-submit`
+
+```yaml
+    - name: Generate and submit dependency graph but do not store as workflow artifact
+      uses: gradle/actions/dependency-submission@v6
+      with:
+        dependency-graph: 'generate-and-submit' # Default value is 'generate-submit-and-upload'
+```
 
 # Resolving a dependency vulnerability
 
@@ -273,7 +319,7 @@ For example, if you want to exclude dependencies resolved by the `buildSrc` proj
 
 ```yaml
     - name: Generate and submit dependency graph
-      uses: gradle/actions/dependency-submission@v4
+      uses: gradle/actions/dependency-submission@v6
       with:
         # Exclude all dependencies that originate solely in the 'buildSrc' project
         dependency-graph-exclude-projects: ':buildSrc'
@@ -295,12 +341,19 @@ The GitHub [dependency-review-action](https://github.com/actions/dependency-revi
 understand dependency changes (and the security impact of these changes) for a pull request,
 by comparing the dependency graph for the pull-request with that of the HEAD commit.
 
-Example of a pull request workflow that executes a build for a pull request and runs the `dependency-review-action`:
+Integrating the Dependency Review Action requires 2 changes to your workflows:
+
+#### 1. Add a `pull_request` trigger to your existing Dependency Submission workflow.
+
+In order to perform Dependency Review on a pull request, the dependency graph must be submitted for the pull request.
+To do this, simply add a `pull_request` trigger to your existing dependency submission workflow.
 
 ```yaml
-name: Dependency review for pull requests
+name: Dependency Submission
 
 on:
+  push:
+    branches: [ 'main' ]
   pull_request:
 
 permissions:
@@ -310,18 +363,44 @@ jobs:
   dependency-submission:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-java@v4
+    - uses: actions/checkout@v6
+    - uses: actions/setup-java@v5
       with:
         distribution: temurin
         java-version: 17
 
     - name: Generate and submit dependency graph
-      uses: gradle/actions/dependency-submission@v4
-
-    - name: Perform dependency review
-      uses: actions/dependency-review-action@v4
+      uses: gradle/actions/dependency-submission@v6
 ```
+
+#### 2. Add a dedicated Dependency Review workflow
+
+The Dependency Review workflow will be triggered directly on `pull_request`, but will wait until the dependency graph results are
+submitted before the dependency review can complete. The period to wait is controlled by the `retry-on-snapshot-warnings` input parameters.
+
+Here's an example of a separate "Dependency Review" workflow that will wait up to 10 minutes for dependency submission to complete.
+
+```yaml
+name: Dependency Review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    steps:
+    - name: 'Dependency Review'
+      uses: actions/dependency-review-action@v4
+      with:
+        retry-on-snapshot-warnings: true
+        retry-on-snapshot-warnings-timeout: 600
+```
+
+The `retry-on-snapshot-warnings-timeout` (in seconds) needs to be long enough to allow the modified dependency-submission workflow to complete.
 
 ## Usage with pull requests from public forked repositories
 
@@ -346,14 +425,14 @@ jobs:
   dependency-submission:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-java@v4
+    - uses: actions/checkout@v6
+    - uses: actions/setup-java@v5
       with:
         distribution: temurin
         java-version: 17
 
     - name: Generate and save dependency graph
-      uses: gradle/actions/dependency-submission@v4
+      uses: gradle/actions/dependency-submission@v6
       with:
         dependency-graph: generate-and-upload
 ```
@@ -376,45 +455,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Download and submit dependency graph
-      uses: gradle/actions/dependency-submission@v4
+      uses: gradle/actions/dependency-submission@v6
       with:
         dependency-graph: download-and-submit # Download saved dependency-graph and submit
 ```
 
-### Integrating `dependency-review-action` for pull requests from public forked repositories
-
-To integrate the `dependency-review-action` into the pull request workflows above, a third workflow file is required.
-This workflow will be triggered directly on `pull_request`, but will wait until the dependency graph results are
-submitted before the dependency review can complete. The period to wait is controlled by the `retry-on-snapshot-warnings` input parameters.
-
-Here's an example of a separate "Dependency Review" workflow that will wait for 10 minutes for the above PR check workflow to complete.
-
-```yaml
-name: dependency-review
-
-on:
-  pull_request:
-
-permissions:
-  contents: read
-
-jobs:
-  dependency-review:
-    runs-on: ubuntu-latest
-    steps:
-    - name: 'Dependency Review'
-      uses: actions/dependency-review-action@v4
-      with:
-        retry-on-snapshot-warnings: true
-        retry-on-snapshot-warnings-timeout: 600
-```
-
-The `retry-on-snapshot-warnings-timeout` (in seconds) needs to be long enough to allow the entire `Generate and save dependency graph` and `Download and submit dependency graph` workflows (above) to complete.
-
 # Gradle version compatibility
 
 Dependency-graph generation is compatible with most versions of Gradle >= `5.2`, and is tested regularly against 
-Gradle versions `5.2.1`, `5.6.4`, `6.0.1`, `6.9.4`, `7.1.1` and `7.6.3`, as well as all patched versions of Gradle 8.x.
+Gradle versions `5.2.1`, `5.6.4`, `6.0.1`, `6.9.4`, `7.1.1`, `7.6.6`, `8.0.2` and `8.14.4`, as well as all patched versions of Gradle 9.x.
 
 A known exception to this is that Gradle `7.0`, `7.0.1` and `7.0.2` are not supported.
 
@@ -425,4 +474,3 @@ See [here](https://github.com/gradle/github-dependency-graph-gradle-plugin?tab=r
 - Dependency Submission Demo repository: https://github.com/gradle/github-dependency-submission-demo
 - GitHub Dependency Graph Gradle Plugin: https://github.com/gradle/github-dependency-graph-gradle-plugin
 - Webinar - Gradle at Scale with GitHub and GitHub Actions at Allegro: https://www.youtube.com/watch?v=gV94I28FPos
-

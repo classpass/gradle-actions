@@ -2,11 +2,11 @@ import * as core from '@actions/core'
 import * as github from '@actions/github'
 import * as cache from '@actions/cache'
 import * as deprecator from './deprecation-collector'
-import {SUMMARY_ENV_VAR} from '@actions/core/lib/summary'
 
-import path from 'path'
+import * as path from 'path'
 
 const ACTION_ID_VAR = 'GRADLE_ACTION_ID'
+const SUMMARY_ENV_VAR = 'GITHUB_STEP_SUMMARY'
 
 export const ACTION_METADATA_DIR = '.setup-gradle'
 
@@ -20,13 +20,15 @@ export class DependencyGraphConfig {
                 return DependencyGraphOption.Generate
             case 'generate-and-submit':
                 return DependencyGraphOption.GenerateAndSubmit
+            case 'generate-submit-and-upload':
+                return DependencyGraphOption.GenerateSubmitAndUpload
             case 'generate-and-upload':
                 return DependencyGraphOption.GenerateAndUpload
             case 'download-and-submit':
                 return DependencyGraphOption.DownloadAndSubmit
         }
         throw TypeError(
-            `The value '${val}' is not valid for 'dependency-graph'. Valid values are: [disabled, generate, generate-and-submit, generate-and-upload, download-and-submit]. The default value is 'disabled'.`
+            `The value '${val}' is not valid for 'dependency-graph'. Valid values are: [disabled, generate, generate-and-submit, generate-submit-and-upload, generate-and-upload, download-and-submit].`
         )
     }
 
@@ -69,6 +71,10 @@ export class DependencyGraphConfig {
         return getOptionalInput('dependency-graph-include-configurations')
     }
 
+    getPluginRepository(): PluginRepositoryConfig {
+        return new PluginRepositoryConfig()
+    }
+
     static constructJobCorrelator(workflow: string, jobId: string, matrixJson: string): string {
         const matrixString = this.describeMatrix(matrixJson)
         const label = matrixString ? `${workflow}-${jobId}-${matrixString}` : `${workflow}-${jobId}`
@@ -96,6 +102,7 @@ export enum DependencyGraphOption {
     Disabled = 'disabled',
     Generate = 'generate',
     GenerateAndSubmit = 'generate-and-submit',
+    GenerateSubmitAndUpload = 'generate-submit-and-upload',
     GenerateAndUpload = 'generate-and-upload',
     DownloadAndSubmit = 'download-and-submit'
 }
@@ -125,42 +132,23 @@ export class CacheConfig {
         return getBooleanInput('gradle-home-cache-strict-match')
     }
 
-    isCacheCleanupEnabled(): boolean {
-        if (this.isCacheReadOnly()) {
-            return false
-        }
-        const cleanupOption = this.getCacheCleanupOption()
-        return cleanupOption === CacheCleanupOption.Always || cleanupOption === CacheCleanupOption.OnSuccess
-    }
-
-    shouldPerformCacheCleanup(hasFailure: boolean): boolean {
-        const cleanupOption = this.getCacheCleanupOption()
-        if (cleanupOption === CacheCleanupOption.Always) {
-            return true
-        }
-        if (cleanupOption === CacheCleanupOption.OnSuccess) {
-            return !hasFailure
-        }
-        return false
-    }
-
-    private getCacheCleanupOption(): CacheCleanupOption {
+    getCacheCleanupOption(): string {
         const legacyVal = getOptionalBooleanInput('gradle-home-cache-cleanup')
         if (legacyVal !== undefined) {
             deprecator.recordDeprecation(
                 'The `gradle-home-cache-cleanup` input parameter has been replaced by `cache-cleanup`'
             )
-            return legacyVal ? CacheCleanupOption.Always : CacheCleanupOption.Never
+            return legacyVal ? CacheCleanupOption.Always.toString() : CacheCleanupOption.Never.toString()
         }
 
         const val = core.getInput('cache-cleanup')
         switch (val.toLowerCase().trim()) {
             case 'always':
-                return CacheCleanupOption.Always
+                return CacheCleanupOption.Always.toString()
             case 'on-success':
-                return CacheCleanupOption.OnSuccess
+                return CacheCleanupOption.OnSuccess.toString()
             case 'never':
-                return CacheCleanupOption.Never
+                return CacheCleanupOption.Never.toString()
         }
         throw TypeError(
             `The value '${val}' is not valid for cache-cleanup. Valid values are: [never, always, on-success].`
@@ -178,6 +166,23 @@ export class CacheConfig {
     getCacheExcludes(): string[] {
         return core.getMultilineInput('gradle-home-cache-excludes')
     }
+
+    getCacheProvider(): CacheProvider {
+        const val = core.getInput('cache-provider')
+        switch (val.toLowerCase().trim()) {
+            case 'basic':
+                return CacheProvider.Basic
+            case 'enhanced':
+            case '':
+                return CacheProvider.Enhanced
+        }
+        throw TypeError(`The value '${val}' is not valid for 'cache-provider'. Valid values are: [basic, enhanced].`)
+    }
+}
+
+export enum CacheProvider {
+    Basic = 'basic',
+    Enhanced = 'enhanced'
 }
 
 export enum CacheCleanupOption {
@@ -194,6 +199,10 @@ export class SummaryConfig {
         }
 
         return this.shouldAddJobSummary(this.getJobSummaryOption(), hasFailure)
+    }
+
+    canAddPRComment(): boolean {
+        return this.getPRCommentOption() !== JobSummaryOption.Never
     }
 
     shouldAddPRComment(hasFailure: boolean): boolean {
@@ -241,7 +250,7 @@ export enum JobSummaryOption {
     OnFailure = 'on-failure'
 }
 
-export class BuildScanConfig {
+export class DevelocityConfig {
     static DevelocityAccessKeyEnvVar = 'DEVELOCITY_ACCESS_KEY'
     static GradleEnterpriseAccessKeyEnvVar = 'GRADLE_ENTERPRISE_ACCESS_KEY'
 
@@ -249,19 +258,19 @@ export class BuildScanConfig {
         return getBooleanInput('build-scan-publish') && this.verifyTermsOfUseAgreement()
     }
 
-    getBuildScanTermsOfUseUrl(): string {
+    getTermsOfUseUrl(): string {
         return core.getInput('build-scan-terms-of-use-url')
     }
 
-    getBuildScanTermsOfUseAgree(): string {
+    getTermsOfUseAgree(): string {
         return core.getInput('build-scan-terms-of-use-agree')
     }
 
     getDevelocityAccessKey(): string {
         return (
             core.getInput('develocity-access-key') ||
-            process.env[BuildScanConfig.DevelocityAccessKeyEnvVar] ||
-            process.env[BuildScanConfig.GradleEnterpriseAccessKeyEnvVar] ||
+            process.env[DevelocityConfig.DevelocityAccessKeyEnvVar] ||
+            process.env[DevelocityConfig.GradleEnterpriseAccessKeyEnvVar] ||
             ''
         )
     }
@@ -298,30 +307,41 @@ export class BuildScanConfig {
         return core.getInput('develocity-ccud-plugin-version')
     }
 
-    getGradlePluginRepositoryUrl(): string {
-        return core.getInput('gradle-plugin-repository-url')
+    getPluginRepository(): PluginRepositoryConfig {
+        return new PluginRepositoryConfig()
     }
 
-    getGradlePluginRepositoryUsername(): string {
-        return core.getInput('gradle-plugin-repository-username')
-    }
-
-    getGradlePluginRepositoryPassword(): string {
-        return core.getInput('gradle-plugin-repository-password')
+    hasTermsOfUseAgreement(): boolean {
+        const develocityAccessKeySet = this.getDevelocityAccessKey() !== ''
+        const termsUrlSet =
+            this.getTermsOfUseUrl() === 'https://gradle.com/terms-of-service' ||
+            this.getTermsOfUseUrl() === 'https://gradle.com/help/legal-terms-of-use'
+        const termsAgreed = this.getTermsOfUseAgree() === 'yes'
+        return develocityAccessKeySet || (termsUrlSet && termsAgreed)
     }
 
     private verifyTermsOfUseAgreement(): boolean {
-        if (
-            (this.getBuildScanTermsOfUseUrl() !== 'https://gradle.com/terms-of-service' &&
-                this.getBuildScanTermsOfUseUrl() !== 'https://gradle.com/help/legal-terms-of-use') ||
-            this.getBuildScanTermsOfUseAgree() !== 'yes'
-        ) {
+        if (!this.hasTermsOfUseAgreement()) {
             core.warning(
                 `Terms of use at 'https://gradle.com/help/legal-terms-of-use' must be agreed in order to publish build scans.`
             )
             return false
         }
         return true
+    }
+}
+
+export class PluginRepositoryConfig {
+    getUrl(): string | undefined {
+        return getOptionalInput('gradle-plugin-repository-url')
+    }
+
+    getUsername(): string | undefined {
+        return getOptionalInput('gradle-plugin-repository-username')
+    }
+
+    getPassword(): string | undefined {
+        return getOptionalInput('gradle-plugin-repository-password')
     }
 }
 

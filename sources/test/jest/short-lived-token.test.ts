@@ -1,5 +1,7 @@
-import {DevelocityAccessCredentials, getToken} from "../../src/develocity/short-lived-token";
 import nock from "nock";
+import {describe, expect, it} from '@jest/globals'
+
+import {DevelocityAccessCredentials, getToken, resolveTokenForServer} from "../../src/develocity/short-lived-token";
 
 describe('short lived tokens', () => {
     it('parse valid access key should return an object', async () => {
@@ -29,33 +31,9 @@ describe('short lived tokens', () => {
         expect(develocityAccessCredentials?.raw()).toBe('host1=key1;host2=key2')
     })
 
-    it('get short lived token fails when cannot connect', async () => {
-        nock('http://localhost:3333')
-            .post('/api/auth/token')
-            .times(3)
-            .replyWithError({
-                message: 'connect ECONNREFUSED 127.0.0.1:3333',
-                code: 'ECONNREFUSED'
-            })
-        await expect(getToken('localhost=key0', ''))
-            .resolves
-            .toBeNull()
-    })
-
-    it('get short lived token is null when request fails', async () => {
-        nock('http://dev:3333')
-            .post('/api/auth/token')
-            .times(3)
-            .reply(500, 'Internal error')
-        expect.assertions(1)
-        await expect(getToken('dev=xyz', ''))
-            .resolves
-            .toBeNull()
-    })
-
     it('get short lived token returns null when access key is empty', async () => {
         expect.assertions(1)
-        await expect(getToken('', ''))
+        await expect(getToken('', false, ''))
             .resolves
             .toBeNull()
     })
@@ -65,7 +43,7 @@ describe('short lived tokens', () => {
             .post('/api/auth/token')
             .reply(200, 'token')
         expect.assertions(1)
-        await expect(getToken('dev=key1', ''))
+        await expect(getToken('dev=key1', false, ''))
             .resolves
             .toEqual({"keys": [{"hostname": "dev", "key": "token"}]})
     })
@@ -78,7 +56,7 @@ describe('short lived tokens', () => {
             .post('/api/auth/token')
             .reply(200, 'token2')
         expect.assertions(1)
-        await expect(getToken('dev=key1;prod=key2', ''))
+        await expect(getToken('dev=key1;prod=key2', false, ''))
             .resolves
             .toEqual({"keys": [{"hostname": "dev", "key": "token1"}, {"hostname": "prod", "key": "token2"}]})
     })
@@ -95,7 +73,7 @@ describe('short lived tokens', () => {
             .post('/api/auth/token')
             .reply(200, 'token2')
         expect.assertions(1)
-        await expect(getToken('dev=key1;bogus=key0;prod=key2', ''))
+        await expect(getToken('dev=key1;bogus=key0;prod=key2', false, ''))
             .resolves
             .toEqual({"keys": [{"hostname": "dev", "key": "token1"}, {"hostname": "prod", "key": "token2"}]})
     })
@@ -110,7 +88,7 @@ describe('short lived tokens', () => {
             .times(3)
             .reply(500, 'Internal Error')
         expect.assertions(1)
-        await expect(getToken('dev=key1;bogus=key0', ''))
+        await expect(getToken('dev=key1;bogus=key0', false, ''))
             .resolves
             .toBeNull()
     })
@@ -120,8 +98,78 @@ describe('short lived tokens', () => {
             .post('/api/auth/token?expiresInHours=4')
             .reply(200, 'token')
         expect.assertions(1)
-        await expect(getToken('dev=key1', '4'))
+        await expect(getToken('dev=key1', false, '4'))
             .resolves
             .toEqual({"keys": [{"hostname": "dev", "key": "token"}]})
+    })
+})
+
+describe('short lived tokens with retry', () => {
+    afterEach(() => {
+        nock.cleanAll()
+        nock.restore()
+    })
+
+    it('get short lived token fails when cannot connect', async () => {
+        nock('http://localhost:3333')
+            .post('/api/auth/token')
+            .times(3)
+            .replyWithError({
+                message: 'connect ECONNREFUSED 127.0.0.1:3333',
+                code: 'ECONNREFUSED'
+            })
+        await expect(getToken('localhost=key0', false, ''))
+            .resolves
+            .toBeNull()
+    })
+
+    it('get short lived token is null when request fails', async () => {
+        nock('http://dev:3333')
+            .post('/api/auth/token')
+            .times(3)
+            .reply(500, 'Internal error')
+        expect.assertions(1)
+        await expect(getToken('dev=xyz', false, ''))
+            .resolves
+            .toBeNull()
+    })
+})
+
+describe('resolveTokenForServer', () => {
+    const credentials = (...pairs: [string, string][]): DevelocityAccessCredentials =>
+        DevelocityAccessCredentials.of(pairs.map(([hostname, key]) => ({hostname, key})))
+
+    it('returns the token matching the server host from a full URL', () => {
+        const tokens = credentials(['ge.example.com', 'key1'], ['other', 'key2'])
+        expect(resolveTokenForServer(tokens, 'https://ge.example.com')).toBe('key1')
+    })
+
+    it('matches on hostname, ignoring scheme, port and path', () => {
+        const tokens = credentials(['ge.example.com', 'key1'])
+        expect(resolveTokenForServer(tokens, 'https://ge.example.com:8443/path')).toBe('key1')
+    })
+
+    it('tolerates a bare hostname with no scheme', () => {
+        const tokens = credentials(['ge.example.com', 'key1'])
+        expect(resolveTokenForServer(tokens, 'ge.example.com')).toBe('key1')
+    })
+
+    it('selects the matching token when multiple are present', () => {
+        const tokens = credentials(['dev', 'key1'], ['ge.example.com', 'key2'])
+        expect(resolveTokenForServer(tokens, 'https://ge.example.com')).toBe('key2')
+    })
+
+    it('returns undefined when no token matches the server host', () => {
+        const tokens = credentials(['ge.example.com', 'key1'])
+        expect(resolveTokenForServer(tokens, 'https://other.example.com')).toBeUndefined()
+    })
+
+    it('returns undefined for an empty server URL', () => {
+        const tokens = credentials(['ge.example.com', 'key1'])
+        expect(resolveTokenForServer(tokens, '')).toBeUndefined()
+    })
+
+    it('returns undefined when there are no tokens', () => {
+        expect(resolveTokenForServer(credentials(), 'https://ge.example.com')).toBeUndefined()
     })
 })

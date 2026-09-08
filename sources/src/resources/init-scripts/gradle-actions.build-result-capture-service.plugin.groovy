@@ -6,6 +6,7 @@ import org.gradle.api.internal.tasks.execution.*
 import org.gradle.execution.*
 import org.gradle.internal.build.event.BuildEventListenerRegistryInternal
 import org.gradle.util.GradleVersion
+import org.slf4j.LoggerFactory
 
 settingsEvaluated { settings ->
     def projectTracker = gradle.sharedServices.registerIfAbsent("gradle-action-buildResultsRecorder", BuildResultsRecorder, { spec ->
@@ -20,6 +21,7 @@ settingsEvaluated { settings ->
 }
 
 abstract class BuildResultsRecorder implements BuildService<BuildResultsRecorder.Params>, BuildOperationListener, AutoCloseable {
+    private final logger = LoggerFactory.getLogger("gradle/actions")
     private boolean buildFailed = false
     private boolean configCacheHit = true
     interface Params extends BuildServiceParameters {
@@ -39,7 +41,8 @@ abstract class BuildResultsRecorder implements BuildService<BuildResultsRecorder
             // Got EVALUATE SETTINGS event: not a config-cache hit"
             configCacheHit = false
         }
-        if (buildOperation.details in RunRootBuildWorkBuildOperationType.Details) {
+        if (buildOperation.metadata == BuildOperationCategory.RUN_WORK ||
+            buildOperation.metadata == BuildOperationCategory.CONFIGURE_PROJECT) {
             if (finishEvent.failure != null) {
                 buildFailed = true
             }
@@ -69,6 +72,7 @@ abstract class BuildResultsRecorder implements BuildService<BuildResultsRecorder
             buildResultsDir.mkdirs()
             def buildResultsFile = new File(buildResultsDir, githubActionStep + getParameters().getInvocationId().get() + ".json")
             if (!buildResultsFile.exists()) {
+                logger.lifecycle("gradle/actions: Writing build results to ${buildResultsFile}")
                 buildResultsFile << groovy.json.JsonOutput.toJson(buildResults)
             }
         } catch (Exception e) {
